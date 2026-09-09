@@ -12,7 +12,6 @@ import at.hannibal2.skyhanni.events.RenderItemTipEvent
 import at.hannibal2.skyhanni.events.RenderObject
 import at.hannibal2.skyhanni.events.chat.SkyHanniChatEvent
 import at.hannibal2.skyhanni.events.minecraft.SkyHanniTickEvent
-import at.hannibal2.skyhanni.features.itemabilities.abilitycooldown.ItemAbility.Companion.getMultiplier
 import at.hannibal2.skyhanni.features.nether.ashfang.AshfangFreezeCooldown
 import at.hannibal2.skyhanni.skyhannimodule.SkyHanniModule
 import at.hannibal2.skyhanni.utils.CachedItemData.Companion.cachedData
@@ -35,8 +34,9 @@ import at.hannibal2.skyhanni.utils.collection.CollectionUtils.equalsOneOf
 import at.hannibal2.skyhanni.utils.collection.CollectionUtils.mapKeysNotNull
 import at.hannibal2.skyhanni.utils.compat.MinecraftCompat
 import at.hannibal2.skyhanni.utils.repopatterns.RepoPattern
-import kotlin.math.max
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 @SkyHanniModule
 object ItemAbilityCooldown {
@@ -61,8 +61,14 @@ object ItemAbilityCooldown {
         ".*§b-\\d+ Mana \\(§6(?<type>.*)§b\\).*",
     )
 
+    /** How long the ragnarock axe is charging up before the strength buff starts. */
+    private val RAGNAROCK_CAST_TIME = 3.seconds
+
+    /** How long the strength buff of the ragnarock axe lasts once it finished casting. */
+    private val RAGNAROCK_BUFF_TIME = 10.seconds
+
     private var lastAbility = ""
-    private var items = mapOf<String, List<ItemText>>()
+    private var items = mapOf<String, List<ItemAbility>>()
     private var abilityItems = mapOf<SafeItemStack, MutableList<ItemAbility>>()
     private val WEIRD_TUBA = "WEIRD_TUBA".toInternalName()
     private val WEIRDER_TUBA = "WEIRDER_TUBA".toInternalName()
@@ -75,19 +81,16 @@ object ItemAbilityCooldown {
 
     @HandleEvent
     fun onPlaySound(event: PlaySoundEvent) {
+        if (!isEnabled()) return
         when {
             // Wither Shield Sound Solo and Wither Impact
             event.soundName == "entity.zombie_villager.cure" && event.pitch == 0.6984127f && event.volume == 1f -> {
                 val scrolls = ItemAbility.getAllAbilityScrolls(InventoryUtils.getItemInHand())
                 if (scrolls.singleOrNull() == ItemAbility.WITHER_IMPACT) {
                     ItemAbility.WITHER_IMPACT.sound()
-                } else {
-                    for (ability in scrolls) {
-                        if (ability == ItemAbility.WITHER_SHIELD_SCROLL) {
-                            ability.activate(null, 5_000)
-                        }
-                        ability.sound()
-                    }
+                } else if (scrolls.contains(ItemAbility.WITHER_SHIELD_SCROLL)) {
+                    // This is the wither shield sound only. The other scrolls on the item have their own sounds.
+                    ItemAbility.WITHER_SHIELD_SCROLL.sound()
                 }
             }
 
@@ -207,11 +210,13 @@ object ItemAbilityCooldown {
             }
             // Tactical Insertion
             event.soundName == "item.flintandsteel.use" && event.pitch == 0.74603176f && event.volume == 1f -> {
-                ItemAbility.TACTICAL_INSERTION.activate(LorenzColor.DARK_PURPLE, 3_000)
+                val ability = ItemAbility.TACTICAL_INSERTION
+                ability.activate(LorenzColor.DARK_PURPLE, 3.seconds, ability.startedAt())
             }
 
             event.soundName == "entity.zombie_villager.cure" && event.pitch == 1.8888888f && event.volume == 0.7f -> {
-                ItemAbility.TACTICAL_INSERTION.activate(null, 17_000)
+                val ability = ItemAbility.TACTICAL_INSERTION
+                ability.activate(null, 17.seconds, ability.startedAt())
             }
             // Totem of Corruption
             event.soundName == "block.lever.click" && event.pitch == 0.84126985f && event.volume == 0.5f -> {
@@ -243,20 +248,19 @@ object ItemAbilityCooldown {
     }
 
     private fun handleItemClick(itemInHand: SafeItemStack?) {
-        if (!SkyBlockUtils.inSkyBlock) return
-        itemInHand?.getInternalName()?.run {
-            ItemAbility.getByInternalName(this)?.setItemClick()
-        }
-        for (scrollAbility in ItemAbility.getAllAbilityScrolls(itemInHand)) {
-            scrollAbility.setItemClick()
+        if (!isEnabled()) return
+        val stack = itemInHand ?: return
+        // Items can hold more than one ability (the gyrokinetic wand has one per mouse button), so remember the
+        // click for every single one of them.
+        for (ability in hasAbility(stack)) {
+            ability.setItemClick()
         }
     }
 
     @HandleEvent
     fun onWorldChange() {
         for (ability in ItemAbility.entries) {
-            ability.lastActivation = SimpleTimeMark.farPast()
-            ability.specialColor = null
+            ability.reset()
         }
     }
 
@@ -267,22 +271,40 @@ object ItemAbilityCooldown {
         val message: String = event.actionBar
         handleOldAbilities(message)
 
+        // The ragnarock axe runs through three phases instead of a single cooldown: it charges up, then gives the
+        // strength buff, and only after that the rest of its cooldown is left. The action bar tells us about every
+        // phase change, so we follow it instead of guessing when a phase is over.
+        val axe = ItemAbility.RAGNAROCK_AXE
         when {
             message.contains("§lCASTING IN ") -> {
-                if (!ItemAbility.RAGNAROCK_AXE.isOnCooldown()) {
-                    ItemAbility.RAGNAROCK_AXE.activate(LorenzColor.WHITE, 3_000)
+                if (axe.activePhaseColor != LorenzColor.WHITE) {
+                    axe.activate(LorenzColor.WHITE, RAGNAROCK_CAST_TIME, axe.startedAt())
                 }
             }
 
             message.contains("§lCASTING") -> {
-                if (ItemAbility.RAGNAROCK_AXE.specialColor != LorenzColor.DARK_PURPLE) {
-                    ItemAbility.RAGNAROCK_AXE.activate(LorenzColor.DARK_PURPLE, 10_000)
+                if (axe.activePhaseColor != LorenzColor.DARK_PURPLE) {
+                    axe.enterCooldownPhase(LorenzColor.DARK_PURPLE, RAGNAROCK_BUFF_TIME, RAGNAROCK_CAST_TIME)
                 }
             }
 
             message.contains("§c§lCANCELLED") -> {
-                ItemAbility.RAGNAROCK_AXE.activate(null, 17_000)
+                // The cast was interrupted, but the axe still goes on its full cooldown.
+                axe.enterCooldownPhase(null, Duration.ZERO, RAGNAROCK_CAST_TIME)
             }
+        }
+    }
+
+    /**
+     * Starts the next phase of an ability that is already running. When we somehow missed the phases before this one,
+     * the ability is started as if it had been used [alreadyElapsed] ago, so the total cooldown still adds up.
+     */
+    private fun ItemAbility.enterCooldownPhase(color: LorenzColor?, duration: Duration, alreadyElapsed: Duration) {
+        val start = serverEventTime()
+        if (isOnCooldown()) {
+            enterPhase(color, duration, start)
+        } else {
+            activate(color, duration + alreadyElapsed, start - alreadyElapsed)
         }
     }
 
@@ -306,9 +328,29 @@ object ItemAbilityCooldown {
 
     private fun click(ability: ItemAbility) {
         if (ability.actionBarDetection) {
-            ability.activate()
+            ability.activate(start = ability.startedAt())
         }
     }
+
+    /**
+     * How far a click and the server's answer to it may be apart to still count as the same ability use. Anything
+     * we do only reaches the server after half a round trip, and its answer takes just as long to come back, so on a
+     * laggy connection this has to be a lot more generous than on a good one.
+     */
+    private val clickWindow: Duration get() = (MinecraftCompat.ping + 500.milliseconds).coerceIn(1.seconds, 3.seconds)
+
+    /** The moment the server sent what we are reacting to, instead of the moment it arrived here. */
+    private fun serverEventTime(): SimpleTimeMark = SimpleTimeMark.now() - MinecraftCompat.ping / 2
+
+    /**
+     * When the cooldown of this ability really started.
+     *
+     * The click that used the ability is the best answer whenever we can still match one to it: the server started
+     * the cooldown half a round trip after that click, and the next click needs the same half round trip to get
+     * there, so from the player's point of view the cooldown runs from the moment they pressed the button.
+     */
+    private fun ItemAbility.startedAt(): SimpleTimeMark =
+        lastItemClick.takeIf { it.passedSince() < clickWindow } ?: serverEventTime()
 
     @HandleEvent
     fun onTick(event: SkyHanniTickEvent) {
@@ -318,51 +360,28 @@ object ItemAbilityCooldown {
     }
 
     private fun checkHotBar(recheckInventorySlots: Boolean = false) {
-        if (recheckInventorySlots || abilityItems.isEmpty()) {
-            abilityItems = ItemUtils.getItemsInInventory(true).associateWith { hasAbility(it) }
-        }
+        if (!recheckInventorySlots && abilityItems.isNotEmpty()) return
 
+        abilityItems = ItemUtils.getItemsInInventory(true).associateWith { hasAbility(it) }
         items = abilityItems.entries.associateByTo(
             mutableMapOf(),
             { it.key.getIdentifier() },
-            { kp -> kp.value.map { createItemText(it) } },
+            { it.value },
         ).mapKeysNotNull { it.key }
-
     }
 
-    private fun createItemText(ability: ItemAbility): ItemText {
-        val specialColor = ability.specialColor
-        val readyText = if (config.itemAbilityShowWhenReady) "R" else ""
-        return if (ability.isOnCooldown()) {
-            val duration = ability.lastActivation + ability.getCooldown() - SimpleTimeMark.now()
-            val color = specialColor ?: if (duration < 600.milliseconds) LorenzColor.RED else LorenzColor.YELLOW
-            ItemText(color, ability.getDurationText(), true, ability.alternativePosition)
-        } else {
-            if (specialColor != null) {
-                ability.specialColor = null
-                tryHandleNextPhase(ability, specialColor)
-                return createItemText(ability)
-            }
-            ItemText(LorenzColor.GREEN, readyText, false, ability.alternativePosition)
+    /**
+     * Built while rendering instead of once per tick, so the countdown keeps ticking down smoothly and stays right
+     * even when the client skips ticks.
+     */
+    private fun ItemAbility.createItemText(): ItemText {
+        if (!isOnCooldown()) {
+            val readyText = if (config.itemAbilityShowWhenReady) "R" else ""
+            return ItemText(LorenzColor.GREEN, readyText, false, alternativePosition)
         }
-    }
-
-    private fun tryHandleNextPhase(ability: ItemAbility, specialColor: LorenzColor) {
-        when (ability) {
-            ItemAbility.GYROKINETIC_WAND_RIGHT -> if (specialColor == LorenzColor.BLUE) {
-                ability.activate(null, 4_000)
-            }
-
-            ItemAbility.RAGNAROCK_AXE -> if (specialColor == LorenzColor.DARK_PURPLE) {
-                ability.activate(null, max((20_000 * ability.getMultiplier()) - 13_000, 0.0).toInt())
-            }
-
-            ItemAbility.WITHER_SHIELD_SCROLL -> if (specialColor == LorenzColor.DARK_PURPLE) {
-                ability.activate(null, (max(10_000 * ability.getMultiplier() - 5_000, 0.0)).toInt())
-            }
-
-            else -> return
-        }
+        val remaining = getRemaining()
+        val color = activePhaseColor ?: if (remaining < 600.milliseconds) LorenzColor.RED else LorenzColor.YELLOW
+        return ItemText(color, getDurationText(), true, alternativePosition)
     }
 
     @HandleEvent
@@ -375,8 +394,10 @@ object ItemAbilityCooldown {
         val uuid = stack.getIdentifier() ?: return
         val list = items[uuid] ?: return
 
-        for (itemText in list) {
+        for (ability in list) {
+            val itemText = ability.createItemText()
             if (guiOpen && !itemText.onCooldown) continue
+            if (itemText.text.isEmpty()) continue
             val color = itemText.color
             val renderObject = RenderObject(color.getChatColor() + itemText.text)
             if (itemText.alternativePosition) {
@@ -398,7 +419,8 @@ object ItemAbilityCooldown {
         val uuid = stack?.getIdentifier() ?: return
         val list = items[uuid] ?: return
 
-        for (itemText in list) {
+        for (ability in list) {
+            val itemText = ability.createItemText()
             if (guiOpen && !itemText.onCooldown) continue
             val color = itemText.color
 
@@ -406,7 +428,8 @@ object ItemAbilityCooldown {
             var opacity = 130
             if (color == LorenzColor.GREEN) {
                 opacity = 80
-                if (!config.itemAbilityShowWhenReady) return
+                // Skip only this ability, the other one on the same item can still be on cooldown.
+                if (!config.itemAbilityShowWhenReady) continue
             }
             event.highlight(color.addOpacity(opacity))
         }
@@ -424,29 +447,38 @@ object ItemAbilityCooldown {
 
         val message = event.message
         if (message == "§dCreeper Veil §r§aActivated!") {
-            ItemAbility.WITHER_CLOAK.activate(LorenzColor.LIGHT_PURPLE)
+            ItemAbility.WITHER_CLOAK.activate(LorenzColor.LIGHT_PURPLE, start = ItemAbility.WITHER_CLOAK.startedAt())
         }
         if (message == "§dCreeper Veil §r§cDe-activated! §r§8(Expired)" ||
             message == "§cNot enough mana! §r§dCreeper Veil §r§cDe-activated!"
         ) {
-            ItemAbility.WITHER_CLOAK.activate()
+            ItemAbility.WITHER_CLOAK.activate(start = serverEventTime())
         }
         if (message == "§dCreeper Veil §r§cDe-activated!") {
-            ItemAbility.WITHER_CLOAK.activate(null, 5000)
+            ItemAbility.WITHER_CLOAK.activate(null, 5.seconds, serverEventTime())
         }
 
         youAlignedOthersPattern.matchMatcher(message) {
-            ItemAbility.GYROKINETIC_WAND_RIGHT.activate(LorenzColor.BLUE, 6_000)
+            alignGyrokineticWand()
         }
         if (message == "§eYou §r§aaligned §r§eyourself!") {
-            ItemAbility.GYROKINETIC_WAND_RIGHT.activate(LorenzColor.BLUE, 6_000)
+            alignGyrokineticWand()
         }
         if (message == "§cRagnarock was cancelled due to being hit!") {
-            ItemAbility.RAGNAROCK_AXE.activate(null, 17_000)
+            ItemAbility.RAGNAROCK_AXE.enterCooldownPhase(null, Duration.ZERO, RAGNAROCK_CAST_TIME)
         }
         youBuffedYourselfPattern.matchMatcher(message) {
-            ItemAbility.SWORD_OF_BAD_HEALTH.activate()
+            ItemAbility.SWORD_OF_BAD_HEALTH.activate(start = ItemAbility.SWORD_OF_BAD_HEALTH.startedAt())
         }
+    }
+
+    /**
+     * The right click of the gyrokinetic wand aligns for 6 seconds, and only after that the rest of its own cooldown
+     * is left. The left click has its own, separate cooldown on the very same item.
+     */
+    private fun alignGyrokineticWand() {
+        val ability = ItemAbility.GYROKINETIC_WAND_RIGHT
+        ability.activate(LorenzColor.BLUE, 6.seconds, ability.startedAt())
     }
 
     @HandleEvent
@@ -478,11 +510,14 @@ object ItemAbilityCooldown {
         return list
     }
 
+    /**
+     * Ability sounds are also played for other players around us, so we only count a sound as our own ability when we
+     * clicked the matching item shortly before. That click is also where the cooldown starts.
+     */
     private fun ItemAbility.sound() {
-        val ping = lastItemClick.passedSince()
-        if (ping < 400.milliseconds) {
-            activate()
-        }
+        val click = lastItemClick
+        if (click.passedSince() > clickWindow) return
+        activate(start = click)
     }
 
     class ItemText(

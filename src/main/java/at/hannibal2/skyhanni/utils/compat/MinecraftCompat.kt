@@ -11,6 +11,8 @@ import net.minecraft.client.multiplayer.ClientLevel
 import net.minecraft.client.player.LocalPlayer
 import net.minecraft.network.protocol.game.ClientboundSetTimePacket
 import net.minecraft.world.entity.Entity
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 
 //? if >= 26.2 {
 import net.minecraft.client.gui.Hud
@@ -57,6 +59,15 @@ object MinecraftCompat {
      * This is always non-null, even if the player is not in a world / singleplayer.
      */
     val localUser get(): User = mc.user
+
+    /**
+     * The round trip time to the server, as reported in the player list.
+     *
+     * Returns [Duration.ZERO] when we are not connected, or when the server does not send a real value.
+     */
+    val ping
+        get(): Duration =
+            (mc.connection?.getPlayerInfo(mc.user.profileId)?.latency ?: 0).coerceAtLeast(0).milliseconds
     // </editor-fold>
 
 

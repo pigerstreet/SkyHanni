@@ -11,9 +11,9 @@ import at.hannibal2.skyhanni.utils.SimpleTimeMark
 import at.hannibal2.skyhanni.utils.SkyBlockItemModifierUtils.getAbilityScrolls
 import at.hannibal2.skyhanni.utils.collection.CollectionUtils.takeIfNotEmpty
 import at.hannibal2.skyhanni.utils.inPartialSeconds
+import at.hannibal2.skyhanni.utils.roundedUpSeconds
 import kotlin.math.floor
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 enum class ItemAbility(
@@ -21,9 +21,6 @@ enum class ItemAbility(
     private val cooldownInSeconds: Int,
     vararg val itemNames: String,
     val alternativePosition: Boolean = false,
-    var lastActivation: SimpleTimeMark = SimpleTimeMark.farPast(),
-    var specialColor: LorenzColor? = null,
-    var lastItemClick: SimpleTimeMark = SimpleTimeMark.farPast(),
     val actionBarDetection: Boolean = true,
     private val ignoreMageCooldownReduction: Boolean = false,
 ) {
@@ -79,6 +76,25 @@ enum class ItemAbility(
     var newVariant = false
     var internalNames = mutableListOf<NeuInternalName>()
 
+    /**
+     * When the ability was used, corrected for the time the server needed to tell us about it. Everything shown is
+     * derived from this absolute time mark, so the countdown does not drift away when ticks are late or dropped.
+     */
+    var activationStart: SimpleTimeMark = SimpleTimeMark.farPast()
+        private set
+
+    /**
+     * End of the phase the ability is currently in. For most abilities that is the whole cooldown, but some run
+     * through several phases: a cast time, then the active effect, then the rest of the cooldown.
+     */
+    private var phaseEnd: SimpleTimeMark = SimpleTimeMark.farPast()
+
+    private var phaseColor: LorenzColor? = null
+
+    /** The last time the player clicked while holding an item with this ability. */
+    var lastItemClick: SimpleTimeMark = SimpleTimeMark.farPast()
+        private set
+
     constructor(
         cooldownInSeconds: Int,
         vararg alternateInternalNames: String,
@@ -98,28 +114,70 @@ enum class ItemAbility(
         internalNames.add(name.toInternalName())
     }
 
-    // TODO: change customCooldown to use Duration instead
-    fun activate(color: LorenzColor? = null, customCooldown: Int = (cooldownInSeconds * 1000)) {
-        specialColor = color
-        lastActivation = SimpleTimeMark.now() - ((cooldownInSeconds.seconds) - customCooldown.milliseconds)
+    /**
+     * Whether the colored phases of this ability run inside its regular cooldown. Those items only become usable
+     * again [getCooldown] after they were used, no matter how long casting and the effect itself take.
+     */
+    private val phasesInsideCooldown: Boolean get() = this == GYROKINETIC_WAND_RIGHT || this == RAGNAROCK_AXE
+
+    /** The moment the ability can be used again. */
+    val cooldownEnd: SimpleTimeMark
+        get() = if (phasesInsideCooldown) maxOf(phaseEnd, activationStart + getCooldown()) else phaseEnd
+
+    /**
+     * What the countdown counts down to: the end of the current phase while the ability is in one (that is the
+     * casting time or how long the effect still lasts), and the end of the cooldown afterwards.
+     */
+    private val displayEnd: SimpleTimeMark get() = if (phaseEnd.isInFuture()) phaseEnd else cooldownEnd
+
+    /** The color of the phase the ability is currently in, or null once that phase is over. */
+    val activePhaseColor: LorenzColor? get() = phaseColor.takeIf { phaseEnd.isInFuture() }
+
+    /**
+     * Starts the cooldown. [start] should be the moment the server started it, not the moment we noticed it, so that
+     * the countdown stays correct on a laggy connection.
+     */
+    fun activate(
+        color: LorenzColor? = null,
+        duration: Duration = getCooldown(),
+        start: SimpleTimeMark = SimpleTimeMark.now(),
+    ) {
+        activationStart = start
+        enterPhase(color, duration, start)
     }
 
-    fun isOnCooldown(): Boolean = lastActivation.passedSince() < getCooldown()
+    /** Moves an already running ability into its next phase, without changing when it was originally used. */
+    fun enterPhase(color: LorenzColor?, duration: Duration, start: SimpleTimeMark = SimpleTimeMark.now()) {
+        phaseColor = color
+        phaseEnd = start + duration
+    }
+
+    fun reset() {
+        activationStart = SimpleTimeMark.farPast()
+        phaseEnd = SimpleTimeMark.farPast()
+        phaseColor = null
+        // A click from before the world switch must not be matched to a sound from after it.
+        lastItemClick = SimpleTimeMark.farPast()
+    }
+
+    fun isOnCooldown(): Boolean = cooldownEnd.isInFuture()
+
+    /** The time the countdown shows, see [displayEnd]. */
+    fun getRemaining(): Duration = displayEnd.timeUntil()
 
     fun getCooldown(): Duration {
-        // Some items aren't really a cooldown but an effect over time, so don't apply cooldown multipliers
-        if (this == WAND_OF_ATONEMENT || this == RAGNAROCK_AXE) return cooldownInSeconds.seconds
+        // The wand of atonement isn't really a cooldown but an effect over time, so don't apply cooldown multipliers
+        if (this == WAND_OF_ATONEMENT) return cooldownInSeconds.seconds
 
         return cooldownInSeconds.seconds * getMultiplier()
     }
 
     fun getDurationText(): String {
-        val duration = (lastActivation + getCooldown()).timeUntil()
+        val duration = getRemaining()
         return if (duration < 1.6.seconds) {
-            val d = (duration.inPartialSeconds)
-            d.roundTo(1).oneDecimal()
+            duration.inPartialSeconds.roundTo(1).oneDecimal()
         } else {
-            "" + (duration.inWholeSeconds + 1)
+            duration.roundedUpSeconds.toString()
         }
     }
 
@@ -130,10 +188,6 @@ enum class ItemAbility(
     companion object {
 
         private val WITHER_SCROLLS = setOf(WITHER_SHIELD_SCROLL, SHADOW_WARP_SCROLL, IMPLOSION_SCROLL)
-
-        fun getByInternalName(internalName: NeuInternalName): ItemAbility? {
-            return entries.firstOrNull { it.newVariant && internalName in it.internalNames }
-        }
 
         fun getAllAbilityScrolls(itemStack: SafeItemStack?): Set<ItemAbility> =
             itemStack?.getAbilityScrolls()?.takeIfNotEmpty()?.getAllAbilityScrolls().orEmpty()
