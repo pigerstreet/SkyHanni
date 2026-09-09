@@ -26,6 +26,7 @@ import at.hannibal2.skyhanni.utils.NumberUtil.roundTo
 import at.hannibal2.skyhanni.utils.RegexUtils.matchMatcher
 import at.hannibal2.skyhanni.utils.RenderUtils.highlight
 import at.hannibal2.skyhanni.utils.SafeItemStack
+import at.hannibal2.skyhanni.utils.ServerPingUtils
 import at.hannibal2.skyhanni.utils.SimpleTimeMark
 import at.hannibal2.skyhanni.utils.SkyBlockItemModifierUtils.getItemId
 import at.hannibal2.skyhanni.utils.SkyBlockItemModifierUtils.getItemUuid
@@ -337,10 +338,10 @@ object ItemAbilityCooldown {
      * we do only reaches the server after half a round trip, and its answer takes just as long to come back, so on a
      * laggy connection this has to be a lot more generous than on a good one.
      */
-    private val clickWindow: Duration get() = (MinecraftCompat.ping + 500.milliseconds).coerceIn(1.seconds, 3.seconds)
+    private val clickWindow: Duration get() = (ServerPingUtils.ping + 500.milliseconds).coerceIn(1.seconds, 3.seconds)
 
     /** The moment the server sent what we are reacting to, instead of the moment it arrived here. */
-    private fun serverEventTime(): SimpleTimeMark = SimpleTimeMark.now() - MinecraftCompat.ping / 2
+    private fun serverEventTime(): SimpleTimeMark = SimpleTimeMark.now() - ServerPingUtils.ping / 2
 
     /**
      * When the cooldown of this ability really started.
