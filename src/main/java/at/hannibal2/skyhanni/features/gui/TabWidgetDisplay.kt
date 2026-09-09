@@ -93,11 +93,7 @@ enum class TabWidgetDisplay(
             val sizeDiff = TabWidgetDisplay.entries.size - config.displayPositions.size
             if (sizeDiff == 0) return
             if (sizeDiff < 0) {
-                ErrorManager.skyHanniError(
-                    "Invalid State of config.displayPositions",
-                    "Display" to TabWidgetDisplay.entries,
-                    "Positions" to config.displayPositions,
-                )
+                repeat(-sizeDiff) { config.displayPositions.removeLast() }
             } else {
                 config.displayPositions.addAll(List(sizeDiff) { Position() })
             }
