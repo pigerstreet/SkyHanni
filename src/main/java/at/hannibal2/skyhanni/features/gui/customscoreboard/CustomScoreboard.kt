@@ -225,6 +225,7 @@ object CustomScoreboard {
 
     private fun showDeprecatedWarning() {
         if (!isEnabled() || warningSilenced) return
+        return
 
         // Nothing to advertise if the replacement is already installed.
         // It can override this scoreboard itself and offers a side by side comparison, so we leave it enabled.
