@@ -69,7 +69,7 @@ object ItemAbilityCooldown {
      * only starts charging once that click reaches it, so without it the cast phase reads as finished slightly before
      * the strength actually lands.
      */
-    private val RAGNAROCK_CAST_TIME = 3.seconds + 300.milliseconds
+    private val RAGNAROCK_CAST_TIME = 3.seconds + 600.milliseconds
 
     /** How long the strength buff of the ragnarock axe lasts once it finished casting. */
     private val RAGNAROCK_BUFF_TIME = 10.seconds
