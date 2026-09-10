@@ -27,7 +27,7 @@ import at.hannibal2.skyhanni.utils.RegexUtils.matchMatcher
 import at.hannibal2.skyhanni.utils.RenderUtils.highlight
 import at.hannibal2.skyhanni.utils.SafeItemStack
 import at.hannibal2.skyhanni.utils.ServerPingUtils
-import at.hannibal2.skyhanni.utils.SimpleTimeMark
+import at.hannibal2.skyhanni.utils.ServerTimeMark
 import at.hannibal2.skyhanni.utils.SkyBlockItemModifierUtils.getItemId
 import at.hannibal2.skyhanni.utils.SkyBlockItemModifierUtils.getItemUuid
 import at.hannibal2.skyhanni.utils.SkyBlockUtils
@@ -62,8 +62,14 @@ object ItemAbilityCooldown {
         ".*§b-\\d+ Mana \\(§6(?<type>.*)§b\\).*",
     )
 
-    /** How long the ragnarock axe is charging up before the strength buff starts. */
-    private val RAGNAROCK_CAST_TIME = 3.seconds
+    /**
+     * How long the ragnarock axe is charging up before the strength buff starts.
+     *
+     * The lore says 3s. The extra 300ms is a safety margin: the countdown is anchored to the click, while the server
+     * only starts charging once that click reaches it, so without it the cast phase reads as finished slightly before
+     * the strength actually lands.
+     */
+    private val RAGNAROCK_CAST_TIME = 3.seconds + 300.milliseconds
 
     /** How long the strength buff of the ragnarock axe lasts once it finished casting. */
     private val RAGNAROCK_BUFF_TIME = 10.seconds
@@ -84,8 +90,11 @@ object ItemAbilityCooldown {
     fun onPlaySound(event: PlaySoundEvent) {
         if (!isEnabled()) return
         when {
-            // Wither Shield Sound Solo and Wither Impact
-            event.soundName == "entity.zombie_villager.cure" && event.pitch == 0.6984127f && event.volume == 1f -> {
+            // Wither Shield Sound Solo and Wither Impact.
+            // The volume is not part of the check: the solo scroll plays this at 1.0, but wither impact on a blade
+            // holding all three scrolls plays the very same sound at 0.45. Which of the two it was is decided by the
+            // scrolls on the held item below, and a stray sound cannot start a cooldown without a matching click.
+            event.soundName == "entity.zombie_villager.cure" && event.pitch == 0.6984127f -> {
                 val scrolls = ItemAbility.getAllAbilityScrolls(InventoryUtils.getItemInHand())
                 if (scrolls.singleOrNull() == ItemAbility.WITHER_IMPACT) {
                     ItemAbility.WITHER_IMPACT.sound()
@@ -95,7 +104,8 @@ object ItemAbilityCooldown {
                 }
             }
 
-            event.soundName == "block.lava.extinguish" && event.pitch == 0.4920635f && event.volume == 1f -> {
+            // Shadow Warp, volume left out for the same reason as the wither shield sound above.
+            event.soundName == "block.lava.extinguish" && event.pitch == 0.4920635f -> {
                 val scrolls = ItemAbility.getAllAbilityScrolls(InventoryUtils.getItemInHand())
                 if (scrolls.contains(ItemAbility.SHADOW_WARP_SCROLL)) {
                     ItemAbility.SHADOW_WARP_SCROLL.sound()
@@ -151,7 +161,9 @@ object ItemAbilityCooldown {
             }
             // Golem Sword & Implosion Solo Scroll & Staff of the Volcano
             event.soundName == "entity.generic.explode" -> {
-                if (event.pitch == 1f && event.volume == 1f) {
+                // Volume left out for the same reason as the wither shield sound above: the solo scroll plays
+                // this at 1.0 and wither impact at 0.75.
+                if (event.pitch == 1f) {
                     val scrolls = ItemAbility.getAllAbilityScrolls(InventoryUtils.getItemInHand())
                     if (scrolls.contains(ItemAbility.IMPLOSION_SCROLL)) {
                         ItemAbility.IMPLOSION_SCROLL.sound()
@@ -341,7 +353,7 @@ object ItemAbilityCooldown {
     private val clickWindow: Duration get() = (ServerPingUtils.ping + 500.milliseconds).coerceIn(1.seconds, 3.seconds)
 
     /** The moment the server sent what we are reacting to, instead of the moment it arrived here. */
-    private fun serverEventTime(): SimpleTimeMark = SimpleTimeMark.now() - ServerPingUtils.ping / 2
+    private fun serverEventTime(): ServerTimeMark = ServerTimeMark.now() - ServerPingUtils.ping / 2
 
     /**
      * When the cooldown of this ability really started.
@@ -350,8 +362,8 @@ object ItemAbilityCooldown {
      * the cooldown half a round trip after that click, and the next click needs the same half round trip to get
      * there, so from the player's point of view the cooldown runs from the moment they pressed the button.
      */
-    private fun ItemAbility.startedAt(): SimpleTimeMark =
-        lastItemClick.takeIf { it.passedSince() < clickWindow } ?: serverEventTime()
+    private fun ItemAbility.startedAt(): ServerTimeMark =
+        if (lastItemClick.passedSince() < clickWindow) lastItemClickOnServer else serverEventTime()
 
     @HandleEvent
     fun onTick(event: SkyHanniTickEvent) {
@@ -516,9 +528,8 @@ object ItemAbilityCooldown {
      * clicked the matching item shortly before. That click is also where the cooldown starts.
      */
     private fun ItemAbility.sound() {
-        val click = lastItemClick
-        if (click.passedSince() > clickWindow) return
-        activate(start = click)
+        if (lastItemClick.passedSince() > clickWindow) return
+        activate(start = lastItemClickOnServer)
     }
 
     class ItemText(
