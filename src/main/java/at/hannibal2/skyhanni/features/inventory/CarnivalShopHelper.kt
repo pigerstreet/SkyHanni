@@ -135,11 +135,9 @@ object CarnivalShopHelper {
 
     private fun checkSavedProgress() {
         val storage = ProfileStorageData.profileSpecific?.carnival?.carnivalShopProgress ?: return
-        for (key in storage.keys) {
-            if (!repoEventShops.any { shop -> shop.shopName.equals(key, ignoreCase = true) }) {
-                storage.remove(key)
-            }
-        }
+        // Removing through the key view is safe, unlike removing from the map while iterating its keys, which throws
+        // ConcurrentModificationException as soon as a shop that is no longer in the repo has been removed.
+        storage.keys.removeIf { key -> repoEventShops.none { shop -> shop.shopName.equals(key, ignoreCase = true) } }
     }
 
     private fun saveProgress() {

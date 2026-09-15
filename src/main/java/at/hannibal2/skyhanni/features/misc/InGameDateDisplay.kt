@@ -56,8 +56,9 @@ object InGameDateDisplay {
             val list = ScoreboardData.sidebarLinesFormatted // we need this to grab the moon/sun symbol
             val year = "Year ${date.year}"
             var monthAndDate = (list.find { monthAndDatePattern.matches(it) } ?: "??").trim()
-            if (monthAndDate.last().isDigit()) {
-                monthAndDate = "${monthAndDate}${SkyBlockTime.daySuffix(monthAndDate.takeLast(2).trim().toInt())}"
+            // A line ending in a color code such as "§5" also ends in a digit, so the day may not parse.
+            monthAndDate.takeLast(2).trim().toIntOrNull()?.takeIf { monthAndDate.last().isDigit() }?.let { day ->
+                monthAndDate = "${monthAndDate}${SkyBlockTime.daySuffix(day)}"
             }
             val time = list.find { it.lowercase().contains("am ") || it.lowercase().contains("pm ") } ?: "??"
             theBaseString = "$monthAndDate, $year ${time.trim()}".removeColor()

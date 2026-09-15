@@ -54,6 +54,12 @@ enum class EliteLeaderboards(
         }
 
         @HandleEvent
+        private fun onProfileJoin() {
+            // Validation that the displayPositions in the config is correct
+            config.displayPositions.ensureSize(EliteLeaderboards.entries.size)
+        }
+
+        @HandleEvent
         fun onGuiRenderTop() {
             if (config.displayPositions.isEmpty()) return
             if (!config.enabled.get()) return

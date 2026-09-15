@@ -149,26 +149,15 @@ object TimeUtils {
         years("y") + days("d") + hours("h") + minutes("m") + seconds("s")
     } ?: tryAlternativeFormat(string)
 
+    // Callers of getDurationOrNull expect null for anything unparsable, so this must not throw on bad input.
     private fun tryAlternativeFormat(string: String): Duration? {
-        val split = string.split(":")
-        return when (split.size) {
-            3 -> {
-                val hours = split[0].toInt() * 1000 * 60 * 60
-                val minutes = split[1].toInt() * 1000 * 60
-                val seconds = split[2].toInt() * 1000
-                seconds + minutes + hours
-            }
-
-            2 -> {
-                val minutes = split[0].toInt() * 1000 * 60
-                val seconds = split[1].toInt() * 1000
-                seconds + minutes
-            }
-
-            1 -> split[0].toInt() * 1000
-
-            else -> return null
-        }.milliseconds
+        val parts = string.split(":").map { it.toLongOrNull() ?: return null }
+        return when (parts.size) {
+            3 -> parts[0].hours + parts[1].minutes + parts[2].seconds
+            2 -> parts[0].minutes + parts[1].seconds
+            1 -> parts[0].seconds
+            else -> null
+        }
     }
 
     fun SkyBlockTime.formatted(

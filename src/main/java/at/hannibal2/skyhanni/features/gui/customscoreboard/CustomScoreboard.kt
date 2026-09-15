@@ -63,7 +63,8 @@ object CustomScoreboard {
 
     private var lastLines: List<ScoreboardLine> = emptyList()
 
-    private var warningSilenced = false
+    // Fork: start silenced so the deprecation notice never fires, without leaving the warning code unreachable.
+    private var warningSilenced = true
 
     private val customScoreboardModLoaded by lazy {
         PlatformUtils.isModInstalled("customscoreboard")
@@ -225,7 +226,7 @@ object CustomScoreboard {
 
     private fun showDeprecatedWarning() {
         if (!isEnabled() || warningSilenced) return
-        return
+
 
         // Nothing to advertise if the replacement is already installed.
         // It can override this scoreboard itself and offers a side by side comparison, so we leave it enabled.

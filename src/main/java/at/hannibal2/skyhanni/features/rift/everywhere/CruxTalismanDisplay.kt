@@ -59,32 +59,29 @@ object CruxTalismanDisplay {
         var showAsMaxed = maxed
         if (!config.compactWhenMaxed && maxed) showAsMaxed = false
 
-        var percent = 0
         if (cruxes.isNotEmpty()) {
+            // The total is shown in the header above the individual lines, so it has to be worked out first.
+            // It used to be updated only after the header was built, which always showed the previous update's value.
+            if (!showAsMaxed) percentValue = (cruxes.sumOf { it.progressPercent() }.toDouble() / cruxes.size).roundTo(1)
             addString("§7Crux Talisman Progress: ${if (showAsMaxed) "§a§lMAXED!" else "§a$percentValue%"}")
             if (!showAsMaxed) {
                 for (line in cruxes) {
-                    percent += if (config.compactWhenMaxed) {
-                        if (!line.maxed) {
-                            "(?<progress>\\d+)/\\d+".toRegex().find(line.progress.removeColor())?.groupValues?.get(1)?.toInt() ?: 0
-                        } else 100
-                    } else {
-                        if (line.progress.contains("MAXED"))
-                            100
-                        else {
-                            "(?<progress>\\d+)/\\d+".toRegex().find(line.progress.removeColor())?.groupValues?.get(1)?.toInt() ?: 0
-                        }
-                    }
                     addString("  ${line.tier} ${line.name}: ${line.progress}")
                 }
             }
         }
-        val totalPercentage = cruxes.size * 100
-        percentValue = ((percent.toDouble() / totalPercentage) * 100).roundTo(1)
         if (bonusesLine.isNotEmpty() && config.showBonuses.get()) {
             addString("§7Bonuses:")
             bonusesLine.forEach { addString("  $it") }
         }
+    }
+
+    private val progressRegex = "(?<progress>[0-9]+)/[0-9]+".toRegex()
+
+    private fun Crux.progressPercent(): Int {
+        val isMaxed = if (config.compactWhenMaxed) maxed else progress.contains("MAXED")
+        if (isMaxed) return 100
+        return progressRegex.find(progress.removeColor())?.groupValues?.get(1)?.toInt() ?: 0
     }
 
     @HandleEvent

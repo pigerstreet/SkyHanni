@@ -2,10 +2,8 @@ package at.hannibal2.skyhanni.features.gui
 
 import at.hannibal2.skyhanni.SkyHanniMod
 import at.hannibal2.skyhanni.api.event.HandleEvent
-import at.hannibal2.skyhanni.config.core.config.Position
 import at.hannibal2.skyhanni.data.model.TabWidget
 import at.hannibal2.skyhanni.skyhannimodule.SkyHanniModule
-import at.hannibal2.skyhanni.test.command.ErrorManager
 import at.hannibal2.skyhanni.utils.RenderUtils.renderRenderables
 import at.hannibal2.skyhanni.utils.SkyBlockUtils
 import at.hannibal2.skyhanni.utils.StringUtils.allLettersFirstUppercase
@@ -90,13 +88,7 @@ enum class TabWidgetDisplay(
         @HandleEvent
         fun onProfileJoin() {
             // Validation that the displayPositions in the config is correct
-            val sizeDiff = TabWidgetDisplay.entries.size - config.displayPositions.size
-            if (sizeDiff == 0) return
-            if (sizeDiff < 0) {
-                repeat(-sizeDiff) { config.displayPositions.removeLast() }
-            } else {
-                config.displayPositions.addAll(List(sizeDiff) { Position() })
-            }
+            config.displayPositions.ensureSize(TabWidgetDisplay.entries.size)
         }
     }
 }

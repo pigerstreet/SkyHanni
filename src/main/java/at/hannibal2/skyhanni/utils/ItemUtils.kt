@@ -643,8 +643,9 @@ object ItemUtils {
     }
 
     private fun getPetRarity(pet: SafeItemStack): LorenzRarity? {
-        val rarityId = pet.getInternalName().asString().split(";").last().toInt()
-        val rarity = LorenzRarity.getById(rarityId)
+        // An internal name without a ";rarity" suffix used to throw here, before the error below could report it.
+        val rarityId = pet.getInternalName().asString().split(";").last().toIntOrNull()
+        val rarity = rarityId?.let { LorenzRarity.getById(it) }
         val name = pet.hoverName.formattedTextCompatLeadingWhiteLessResets()
         if (rarity == null) {
             ErrorManager.logErrorStateWithData(

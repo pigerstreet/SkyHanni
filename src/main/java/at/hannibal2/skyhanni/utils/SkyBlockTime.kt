@@ -84,9 +84,12 @@ data class SkyBlockTime(
             remainingMillis %= SKYBLOCK_DAY_MILLIS
             val hour = getUnit(remainingMillis, SKYBLOCK_HOUR_MILLIS)
             remainingMillis %= SKYBLOCK_HOUR_MILLIS
-            val minute = getUnit(remainingMillis, SKYBLOCK_MINUTE_MILLIS)
+            // A SkyBlock minute lasts 833.33 ms and a second 13.89 ms, so the truncated constants above leave a
+            // remainder at the end of every unit: without clamping, minute reaches 60 and second reaches 64.
+            // Both only happen in the tail of unit 59, which is what they get reported as.
+            val minute = getUnit(remainingMillis, SKYBLOCK_MINUTE_MILLIS).coerceAtMost(59)
             remainingMillis %= SKYBLOCK_MINUTE_MILLIS
-            val second = getUnit(remainingMillis, SKYBLOCK_SECOND_MILLIS)
+            val second = getUnit(remainingMillis, SKYBLOCK_SECOND_MILLIS).coerceAtMost(59)
             return SkyBlockTime(year, month, day, hour, minute, second)
         }
 

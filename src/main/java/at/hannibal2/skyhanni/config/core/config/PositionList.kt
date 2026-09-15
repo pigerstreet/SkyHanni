@@ -12,6 +12,17 @@ class PositionList() : ArrayList<Position>(), MutableList<Position> {
         this.addAll(List(size) { Position() })
     }
 
+    /**
+     * Resizes the list to hold exactly [expectedSize] positions.
+     *
+     * A saved config keeps whatever amount it was written with, so it goes stale as soon as an update adds or
+     * removes an entry from the enum the positions belong to. Indexing by ordinal throws once it is too short.
+     */
+    fun ensureSize(expectedSize: Int) {
+        while (size > expectedSize) removeAt(lastIndex)
+        if (size < expectedSize) addAll(List(expectedSize - size) { Position() })
+    }
+
     fun setLink(configLink: ConfigLink) {
         this.configLink = configLink
         forEach {
