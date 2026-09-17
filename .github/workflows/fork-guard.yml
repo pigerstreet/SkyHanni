@@ -1,0 +1,127 @@
+name: fork-guard
+
+# Reviews every commit that lands on beta — upstream syncs included — with a Claude
+# agent: flags malicious code, reverts the offending commits, opens an issue and
+# fails the run.
+#
+# This fork has no branch that upstream never touches (beta is both the tracked and
+# the default branch), so unlike the devonian fork there is no protected copy of the
+# scan logic: .github/fork-guard/ is read from the pushed tree. A commit that edits
+# or deletes this workflow can therefore skip its own scan — the daily run below is
+# the only backstop, and it uses the same file.
+on:
+  push:
+    branches: ['beta']
+  schedule:
+    # Incremental re-scan of anything since the guard-last-scan-beta tag.
+    - cron: '37 5 * * *'
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: 'Base commit (older). Empty = resume from the guard-last-scan tag.'
+        required: false
+      head_sha:
+        description: 'Head commit (newer). Empty = tip of the guarded branch.'
+        required: false
+      dry_run:
+        description: 'Report findings only — never revert, push, cancel or file an issue.'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: fork-guard-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TARGET_BRANCH: 'beta'
+  # Empty: guard scripts come from the tree being scanned (no untouched branch here).
+  GUARD_TRUSTED_REF: ''
+
+jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    # SkyHanni diffs are large; give the chunk budget room before the runner cuts us off.
+    timeout-minutes: 35
+    steps:
+      - name: checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: take the guard scripts from the protected branch
+        id: guard
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/guard-scripts"
+          mkdir -p "$dest"
+          if [ -n "${GUARD_TRUSTED_REF}" ]; then
+            git archive "origin/${GUARD_TRUSTED_REF}" .github/fork-guard | tar -x -C "$dest"
+          else
+            mkdir -p "$dest/.github/fork-guard"
+            cp -r .github/fork-guard/. "$dest/.github/fork-guard/"
+          fi
+          find "$dest" -name '*.sh' -exec sed -i 's/\r$//' {} +
+          echo "dir=$dest/.github/fork-guard" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: install claude code
+        run: npm install -g @anthropic-ai/claude-code@2.1.274
+
+      - name: scan
+        id: scan
+        env:
+          # orcarouter gateway — set the ORCAROUTER_API_KEY repo secret.
+          # Optional repo variables: SCAN_MODEL (default orcarouter/auto),
+          # SCAN_SMALL_MODEL (default anthropic/claude-haiku-4.5).
+          ANTHROPIC_BASE_URL: https://api.orcarouter.ai
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ORCAROUTER_API_KEY }}
+          ANTHROPIC_MODEL: ${{ vars.SCAN_MODEL || 'orcarouter/auto' }}
+          ANTHROPIC_SMALL_FAST_MODEL: ${{ vars.SCAN_SMALL_MODEL || 'anthropic/claude-haiku-4.5' }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ vars.SCAN_SMALL_MODEL || 'deepseek/deepseek-v4.1-flash' }}
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+          GUARD_SCRIPTS_DIR: ${{ steps.guard.outputs.dir }}
+          EVENT_BASE_SHA: ${{ github.event.before }}
+          EVENT_HEAD_SHA: ${{ github.sha }}
+          DISPATCH_BASE_SHA: ${{ inputs.base_sha }}
+          DISPATCH_HEAD_SHA: ${{ inputs.head_sha }}
+        run: bash "$GUARD_SCRIPTS_DIR/scan.sh"
+
+      - name: act on findings
+        # also runs when the scan step itself broke, so a scan that never happened
+        # cannot silently pass
+        if: steps.scan.outputs.verdict != 'CLEAN'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Repo variable FORK_GUARD_DRY_RUN=true turns every run into a report-only
+          # dry run; used while bringing the guard up.
+          DRY_RUN: ${{ inputs.dry_run || vars.FORK_GUARD_DRY_RUN || 'false' }}
+        run: bash "${{ steps.guard.outputs.dir }}/remediate.sh"
+
+      - name: record the scan bookmark
+        if: always() && steps.scan.outputs.verdict == 'CLEAN'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          head="${{ steps.scan.outputs.head_sha }}"
+          [ -n "$head" ] || exit 0
+          tag="guard-last-scan-${TARGET_BRANCH}"
+          git fetch --quiet --no-tags origin "+refs/tags/${tag}:refs/tags/${tag}" 2>/dev/null || true
+          current="$(git rev-parse --verify --quiet "refs/tags/${tag}^{commit}" || true)"
+          # never move the bookmark backwards: a dispatch over an older range would
+          # otherwise make every later run re-scan commits it already cleared
+          if [ -n "$current" ] && ! git merge-base --is-ancestor "$current" "$head"; then
+            echo "bookmark stays at ${current:0:9}; ${head:0:9} is not a descendant of it"
+            exit 0
+          fi
+          git tag -f "$tag" "$head"
+          git push -f origin "refs/tags/${tag}"
